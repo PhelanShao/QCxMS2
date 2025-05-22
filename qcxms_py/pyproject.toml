@@ -1,0 +1,41 @@
+[project]
+name = "qcxms_py"
+version = "0.1.0"
+description = "A Python port of the QCxMS2 program for mass spectrometry simulation."
+authors = [
+    { name = "QCxMS Python Porting Team", email = "developers@example.com" },
+]
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "Apache-2.0" } # Assuming Apache 2.0, update if different
+
+dependencies = [
+    "toml",
+    "numpy>=1.20", # RMSD module uses NumPy; specify a reasonable minimum version
+]
+
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Scientific/Engineering :: Chemistry",
+    "Topic :: Scientific/Engineering :: Physics",
+]
+
+[project.urls]
+Homepage = "https://github.com/your-repo/qcxms_py" # Replace with actual URL
+Repository = "https://github.com/your-repo/qcxms_py"
+# Documentation = "https://qcxms_py.readthedocs.io" # Example
+
+[project.scripts]
+qcxms_run = "qcxms.main:main"
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+backend-path = "."
