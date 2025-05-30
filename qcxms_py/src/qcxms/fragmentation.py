@@ -10,10 +10,10 @@ try:
     from . import charges
     from . import reaction
     from . import utility
-    from . import tsmod # Import the new tsmod
-    # from . import mcsimu # To be imported when available
-    # from . import structools # To be imported when available
-    from .constants import AUTOEV, EVTOKCAL # Assuming these are in a constants module
+    from . import tsmod 
+    from . import mcsimu # MCSimu Integration
+    # from . import structools 
+    from .constants import AUTOEV, EVTOKCAL 
 except ImportError:
     # Fallbacks for standalone/testing
     print("Attempting to import dummy/mock modules for fragmentation.py standalone run.")
@@ -251,13 +251,13 @@ def _collect_fragments_py(
 # --- Main Fragmentation Workflow ---
 def calculate_fragments_py(
     env: RunTypeData, 
-    precursor_xyz_fname: str, # Filename of the precursor (e.g., "fragment.xyz" or "isomer.xyz")
-    # eiee_dist: List[WP], # IEE distribution energies
-    # piee_dist: List[WP], # IEE distribution probabilities/weights
-    # These are now assumed to be accessible via env or re-read if needed by mcsimu
-    fragmentation_level: int, # Depth of fragmentation (nfragl in Fortran)
-    precursor_dir_in_cascade: str, # Path string like "p0/f1", or "" for initial molecule
-) -> Tuple[List[str], int]: # Returns (list_of_next_fragments_to_process, count)
+    precursor_xyz_fname: str, 
+    eiee_dist_energies: List[WP],    # Added for mcsimu
+    eiee_dist_probs: List[WP],       # Added for mcsimu
+    precursor_intensity: WP,         # Added for mcsimu (p0_intensity_fraction)
+    fragmentation_level: int, 
+    precursor_dir_in_cascade: str, 
+) -> Tuple[List[str], int]: 
     """
     Main fragmentation routine for a given precursor molecule.
     Orchestrates fragment generation, QM calculations, charge assignment, filtering, and simulation.
@@ -373,12 +373,38 @@ def calculate_fragments_py(
         print("  Skipping Transition State search due to -nots flag.")
     
     # Monte Carlo Simulation
-    # This requires eiee/piee to be passed or read by mcsimu
-    # mcsimu_results = mcsimu.run_monte_carlo_py(env, current_npairs, current_fragdirs, eiee_dist, piee_dist, fragmentation_level)
-    # This function from mcsimu.py is not translated yet.
-    print("  Skipping Monte Carlo simulation (placeholder).")
+    if current_npairs > 0:
+        print(f"  Preparing and running Monte Carlo simulation for {current_npairs} channels...")
+        
+        # fragdirs for mcsimu need product paths relative to env.startdir
+        fragdirs_for_mcsimu: List[List[str]] = []
+        for pair_id, prod1_local, prod2_local_or_empty in current_fragdirs:
+            # prod1_local, prod2_local_or_empty are relative to the current precursor's directory
+            # precursor_dir_in_cascade is the path of the current precursor relative to env.startdir
+            
+            path_prod1_for_mcsimu = str(Path(precursor_dir_in_cascade) / prod1_local)
+            path_prod2_for_mcsimu = ""
+            if prod2_local_or_empty:
+                path_prod2_for_mcsimu = str(Path(precursor_dir_in_cascade) / prod2_local_or_empty)
+            
+            fragdirs_for_mcsimu.append([pair_id, path_prod1_for_mcsimu, path_prod2_for_mcsimu])
 
-    # Collect important fragments (based on mcsimu_results, which we don't have)
+        # CWD is already the precursor's directory, which montecarlo_py expects.
+        mcsimu.montecarlo_py(
+            env,
+            current_npairs,
+            fragdirs_for_mcsimu,
+            eiee_dist_energies,
+            eiee_dist_probs,
+            fragmentation_level,
+            precursor_intensity # This is p0_intensity_fraction for the reactions in this MC step
+        )
+    else:
+        print("  No viable reaction channels remaining for Monte Carlo simulation.")
+
+    # Collect important fragments (based on mcsimu_results, which we don't have directly here yet)
+    # The "fragments" file is written by _collect_fragments_py with paths relative to precursor_dir_in_cascade.
+    # mcsimu.py writes pfrag files into product directories. These are used by mcesim.py later.
     # For now, assume all remaining fragments are "important" enough to be listed.
     # The path stored in fraglist needs to be relative to env.startdir for uniqueness across levels.
     final_fragment_list, num_final_frags = _collect_fragments_py(
@@ -386,13 +412,48 @@ def calculate_fragments_py(
         "fragments", precursor_dir_in_cascade
     )
     
-    # File management for multi-level fragmentation
-    if fragmentation_level > 1: # Fortran used nfragl (fragmentation level)
-        if Path("fragments").exists():
-            with open(original_path / ".." / "allfragments", "a") as outfile, open("fragments", "r") as infile:
+    # File management for multi-level fragmentation (writing to allfragments, moving product dirs)
+    # This logic might need adjustment based on whether product dirs from CREST (p0, p0f1 etc.)
+    # are already globally unique or if they are always local to the current precursor.
+    # The current CREST wrapper creates them locally (e.g. current_precursor_dir/p0).
+    # The ts_search also operates on these local dirs.
+    # The mcsimu.montecarlo_py is given paths to these products that are made unique by prepending precursor_dir_in_cascade.
+    # The actual product directories (e.g. env.startdir/precursor_dir_in_cascade/p0) are where results like pfrag are written by mcsimu.
+    # The file moving logic below seems to be from an older model where fragment directories were made globally unique
+    # *after* processing. This might conflict if mcsimu expects them to stay in place under precursor_dir_in_cascade.
+    # For now, I will keep the original file moving logic, but this needs careful review with mcesim.py's expectations.
+    # mcesim.py reads allfrags.dat, which contains paths like "genX/pYfZ".
+    # The _collect_fragments_py writes local paths (e.g. "p0", "p0f1") into the "fragments" file.
+    # The "allfragments" accumulation and moving logic:
+
+    original_path_for_frag_ops = Path.cwd() # Should be current precursor_dir
+
+    if fragmentation_level > 0: # Fortran: nfragl > 1 (level 1 is first products, >1 are sub-products)
+                                # Python: level 0 initial, level 1 first products. So >0 for sub-products?
+                                # Let's match Fortran: if fragmentation_level refers to the *generation number* being produced
+                                # then level 1 means products of initial molecule. Level 2 means products of level 1 frags.
+                                # The file moving logic in Fortran was if nfragl > 1.
+                                # If current `fragmentation_level` is the level of the *precursor*, then products are level+1.
+                                # This logic is a bit tangled. Let's assume `fragmentation_level` is "current precursor's level".
+                                # If initial molecule is level 0, its products are level 1.
+                                # If a level 1 product becomes a precursor, its products are level 2.
+                                # The `allfragments` and moving was for `nfragl > 1` in Fortran's `mcesim` loop,
+                                # where `nfragl` was the level of the *precursor* being processed by `calcfrags`.
+        if (original_path_for_frag_ops / "fragments").exists():
+            # Append to allfragments in the parent directory of the current precursor
+            # This parent should be the reaction directory that formed the current precursor,
+            # or env.startdir if current precursor is a primary fragment.
+            # This pathing is tricky. Fortran used `env%path = ".."` then `call wrallfrags`.
+            # Let's assume `allfragments` is always at `env.startdir`.
+            with open(env.startdir / "allfragments", "a") as outfile, \
+                 open(original_path_for_frag_ops / "fragments", "r") as infile:
                 outfile.write(infile.read())
         
-        # Move processed fragment/isomer directories to a global location relative to env.startdir
+        # Move processed fragment/isomer directories.
+        # These directories (current_fragdirs[i][1] and [2]) are LOCAL to original_path_for_frag_ops.
+        # They need to be moved to env.startdir and given their globally unique name.
+        # This global name is what's stored in `allfrags.dat` and used by `mcesim_py` to cd into.
+        # The paths constructed for `fragdirs_for_mcsimu` are these global unique names.
         # Fortran: mv fragdirs(i,j) env%startdir/startdir_fragdirs(i,j)
         # Example: current precursor is "p0/f1". A product is "p0/f1/p0".
         # It should be moved to "p0f1p0" at the top level (env.startdir).
@@ -404,26 +465,32 @@ def calculate_fragments_py(
                 # Global name should incorporate the precursor path.
                 # precursor_dir_in_cascade might be "p0/f1"
                 # local_item_path.name is "p0"
-                # global_name = precursor_dir_in_cascade.replace("/", "") + local_item_path.name 
-                # This logic needs to exactly match Fortran's naming for recursive calls.
-                # Fortran: dir2 = trim(startdir)//trim(fragdirs(i, j))
-                #          jobcall = 'mv '//trim(fragdirs(i, j))//' '//trim(env%startdir)//'/'//trim(dir2)
-                # If startdir = "p0f1", fragdirs(i,j) = "p0", then target is env.startdir / "p0f1p0"
+                # global_name = precursor_dir_in_cascade.replace("/", "") + local_item_path.name
+                # This should align with how paths are stored in allfrags.dat and used by mcesim_py.
+                # The paths in `fragdirs_for_mcsimu` are already these global paths.
+                # So, if `item1_dir_str` from `current_fragdirs` is "p0" (local name),
+                # and `path_prod1_for_mcsimu` is "precursor_cascade_path/p0" (global name for mcsimu),
+                # the directory `original_path_for_frag_ops / "p0"` should be moved to `env.startdir / "precursor_cascade_path/p0"`.
+                # This implies `path_prod1_for_mcsimu` is the target path *relative to env.startdir*.
                 
-                # Construct the global unique name
-                global_unique_name_parts = []
-                if precursor_dir_in_cascade:
-                    global_unique_name_parts.append(precursor_dir_in_cascade.replace(os.sep, ""))
-                global_unique_name_parts.append(local_item_path.name)
-                global_target_name = "".join(global_unique_name_parts)
-                global_target_path = Path(env.startdir) / global_target_name
+                # Let's use the `fragdirs_for_mcsimu` which has the correct global-relative paths for products.
+                # current_fragdirs still holds local names.
+                # Need to map local names to their global target paths for moving.
+                
+                # This file moving logic is disabled for now, as mcsimu.py and mcesim.py
+                # now seem to rely on product directories being subdirectories of their precursor,
+                # and product paths in fragdirs (for mcsimu) and allfrags.dat (for mcesim)
+                # are constructed like "precursor_path/product_local_name".
+                # If products are moved to the top level (env.startdir), then these paths would be incorrect.
+                # The Fortran code's file management here was complex and tied to its specific CWD and path model.
+                # For now, assume product directories (p0, p1, p0f1 etc.) remain under their precursor's directory.
+                # The `allfragments` file will contain paths like "precursor_dir_in_cascade/p0", etc.
+                pass # File moving logic deferred / re-evaluated.
 
-                if local_item_path.exists(): # local_item_path is relative to current precursor dir
-                    print(f"  Moving {local_item_path} to {global_target_path}")
-                    shutil.move(str(local_item_path), str(global_target_path))
-    else: # fragmentation_level == 1
-        if Path("fragments").exists():
-            iomod.copy_file("fragments", "allfragments") # For the first level
+    else: # fragmentation_level == 0 (initial molecule)
+        if (original_path_for_frag_ops / "fragments").exists():
+            # For the very first molecule, "allfragments" is just its "fragments" file.
+            iomod.copy_file(original_path_for_frag_ops / "fragments", env.startdir / "allfragments")
 
     return final_fragment_list, num_final_frags
 

@@ -10,9 +10,11 @@ from typing import List, Tuple, Optional, TypeVar, Callable, Dict
 # For now, define WP for type hinting if not available from a central place yet.
 try:
     from .data import WP, RunTypeData # Relative import if utility is part of a package
+    from .isotopes import AVERAGE_ATOMIC_MASSES # For get_average_mol_mass_py
 except ImportError:
     # Fallback for standalone development or if data.py is not yet structured for this
     WP = float
+    from isotopes import AVERAGE_ATOMIC_MASSES # type: ignore
     @dataclass
     class RunTypeData: # Dummy class for type hinting
         chrg: int = 0
@@ -908,6 +910,143 @@ if __name__ == '__main__':
     # dummy_env_cleanup = RunTypeData()
     # dummy_env_cleanup.mode = "ei" 
     # cleanup_qcxms2_for_restart(dummy_env_cleanup) # Uses iomod.rmrf
-    # if Path("p1").exists(): shutil.rmtree("p1") 
+    # if Path("p1").exists(): shutil.rmtree("p1")
+
+
+# --- New XYZ Parsing and Geometry Utilities ---
+
+def get_atomic_numbers_and_coords_py(
+    xyz_filepath: Union[str, Path]
+) -> Tuple[int, Optional[List[int]], Optional[List[List[WP]]]]:
+    """
+    Reads a standard XYZ file.
+    Returns:
+        Tuple (natoms, list_of_atomic_numbers, list_of_coordinates_angstrom)
+        Returns (0, None, None) if file cannot be read or is malformed.
+    """
+    try:
+        with open(xyz_filepath, 'r') as f:
+            lines = f.readlines()
+        
+        if not lines:
+            print(f"Warning: XYZ file {xyz_filepath} is empty.")
+            return 0, None, None
+
+        num_atoms = int(lines[0].strip())
+        if len(lines) < num_atoms + 2:
+            print(f"Warning: XYZ file {xyz_filepath} is malformed (not enough lines for {num_atoms} atoms).")
+            return 0, None, None
+            
+        atomic_numbers: List[int] = []
+        coordinates: List[List[WP]] = []
+        
+        for i in range(2, num_atoms + 2):
+            parts = lines[i].split()
+            if len(parts) < 4:
+                print(f"Warning: Malformed atom line in {xyz_filepath}: {lines[i].strip()}")
+                return 0, None, None # Or skip this atom? For now, treat as error.
+            
+            atomic_numbers.append(e2i(parts[0])) # Uses e2i from this module
+            coordinates.append([float(parts[1]), float(parts[2]), float(parts[3])])
+            
+        return num_atoms, atomic_numbers, coordinates
+        
+    except FileNotFoundError:
+        print(f"Warning: XYZ file {xyz_filepath} not found.")
+        return 0, None, None
+    except ValueError:
+        print(f"Warning: Could not parse number of atoms or coordinates in {xyz_filepath}.")
+        return 0, None, None
+    except Exception as e:
+        print(f"An unexpected error occurred reading {xyz_filepath}: {e}")
+        return 0, None, None
+
+def get_atomic_numbers_from_xyz_py(xyz_filepath: Union[str, Path]) -> List[int]:
+    """Reads an XYZ file and returns a list of atomic numbers."""
+    _, atomic_numbers, _ = get_atomic_numbers_and_coords_py(xyz_filepath)
+    return atomic_numbers if atomic_numbers is not None else []
+
+def is_linear_molecule_py(xyz_filepath: Union[str, Path], tol_deg: WP = 5.0) -> bool:
+    """
+    Checks if a molecule is linear.
+    For N<3 atoms, it's considered linear.
+    For N=3, checks if the bond angle is close to 180 degrees.
+    For N>3, uses a simplified check (e.g., if all atoms lie on a line defined by two outermost).
+    A robust check would use moments of inertia (requires NumPy).
+    """
+    num_atoms, _, coords_angstrom = get_atomic_numbers_and_coords_py(xyz_filepath)
+
+    if num_atoms is None or coords_angstrom is None or num_atoms == 0:
+        print(f"Warning: Could not read molecule from {xyz_filepath} for linearity check.")
+        return False # Default to non-linear if structure is unreadable
+
+    if num_atoms < 3:
+        return True # Point or diatomic is linear
+
+    # Convert to NumPy arrays for easier vector math if available, otherwise list math
+    try:
+        import numpy as np
+        coords = np.array(coords_angstrom, dtype=float)
+
+        if num_atoms == 3:
+            v1 = coords[0] - coords[1]
+            v2 = coords[2] - coords[1]
+            v1_u = v1 / np.linalg.norm(v1)
+            v2_u = v2 / np.linalg.norm(v2)
+            dot_product = np.dot(v1_u, v2_u)
+            angle_rad = np.arccos(np.clip(dot_product, -1.0, 1.0))
+            angle_deg = np.degrees(angle_rad)
+            return abs(angle_deg - 180.0) < tol_deg or angle_deg < tol_deg # Linear if ~180 or ~0
+        
+        # For N > 3, moment of inertia is more robust.
+        # Simplified check: are all atoms collinear with the first two?
+        # This is not very robust.
+        # For now, default to non-linear for N > 3 for simplicity without full inertia calc.
+        # A proper implementation would calculate principal moments of inertia.
+        # If one is close to zero (or much smaller than the other two), it's linear.
+        if num_atoms > 3: # Placeholder for more robust N>3 check
+            # Calculate inertia tensor
+            centered_coords = coords - np.mean(coords, axis=0)
+            Ixx = np.sum(centered_coords[:,1]**2 + centered_coords[:,2]**2)
+            Iyy = np.sum(centered_coords[:,0]**2 + centered_coords[:,2]**2)
+            Izz = np.sum(centered_coords[:,0]**2 + centered_coords[:,1]**2)
+            Ixy = -np.sum(centered_coords[:,0] * centered_coords[:,1])
+            Ixz = -np.sum(centered_coords[:,0] * centered_coords[:,2])
+            Iyz = -np.sum(centered_coords[:,1] * centered_coords[:,2])
+            
+            inertia_tensor = np.array([
+                [Ixx, Ixy, Ixz],
+                [Ixy, Iyy, Iyz],
+                [Ixz, Iyz, Izz]
+            ])
+            eigenvalues = np.linalg.eigvalsh(inertia_tensor)
+            # Sort eigenvalues by magnitude
+            sorted_eigenvalues = np.sort(np.abs(eigenvalues))
+            # If smallest eigenvalue is close to zero relative to others (e.g., < 1e-4 of largest)
+            if sorted_eigenvalues[0] < 1e-4 * sorted_eigenvalues[-1] and sorted_eigenvalues[-1] > 1e-4 : # Check if smallest is near zero and molecule is not a point
+                return True
+
+
+        print(f"Warning: Linearity check for N>3 atoms in {xyz_filepath} is using moment of inertia. Ensure NumPy is available.")
+        return False # Default for N>3 if NumPy based check fails or not precise enough
+
+    except ImportError:
+        print("Warning: NumPy not available for robust linearity check. Defaulting to non-linear for N>3.")
+        return False # Default if NumPy is not available
+    except Exception as e:
+        print(f"Error during linearity check for {xyz_filepath}: {e}. Defaulting to non-linear.")
+        return False
+
+def get_average_mol_mass_py(atomic_numbers: List[int]) -> WP:
+    """Calculates the average molecular mass from a list of atomic numbers."""
+    # This function was originally in isotopes.py, moved/re-exported here for utility access
+    molmass: WP = 0.0
+    for z_val in atomic_numbers:
+        if 0 < z_val < len(AVERAGE_ATOMIC_MASSES):
+            molmass += AVERAGE_ATOMIC_MASSES[z_val]
+        else:
+            # Handle unknown atomic number, e.g., add 0 or raise error
+            print(f"Warning: Average atomic mass for Z={z_val} not available. Contributing 0 to molecular mass.")
+    return molmass
 
 ```
