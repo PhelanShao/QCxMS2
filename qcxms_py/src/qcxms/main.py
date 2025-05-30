@@ -15,8 +15,8 @@ try:
     from . import iee
     from . import fragmentation
     from . import reaction
+    from . import tsmod # Import the new tsmod
     # Placeholders for future modules
-    # from . import tsmod 
     # from . import mcsimu
     # from . import plot
     from .constants import AUTOEV, EVTOKCAL, KB_EV_K, PI_CONST # PI_CONST if needed by ported random
@@ -25,7 +25,7 @@ except ImportError:
     # and not installed as a package.
     print("Attempting to import local/mock modules for main.py standalone run.")
     from data import RunTypeData, Timer, WP # type: ignore
-    import argparser_mock as ap # type: ignore
+    import argparser_mock as ap # type: ignore # type: ignore
     import iomod_mock as iomod # type: ignore
     import utility_mock as utility # type: ignore
     import qmmod_mock as qmmod # type: ignore
@@ -34,6 +34,9 @@ except ImportError:
     import iee_mock as iee # type: ignore
     import fragmentation_mock as fragmentation # type: ignore
     import reaction_mock as reaction # type: ignore
+    import tsmod_mock as tsmod # type: ignore
+
+    import math # math was missing from fallback imports
     AUTOEV = 27.211386245988
     EVTOKCAL = 23.060547830618307
     KB_EV_K = 8.6173332621415e-5
@@ -109,13 +112,31 @@ def main(argv: Optional[List[str]] = None):
 
     # --- Special Run Modes (Early Exit) ---
     if env.ircrun:
-        print("IRC run mode (-ircrun) is not yet implemented in the Python version.")
-        # tsmod.find_irc_py(env, ...) # Placeholder
-        sys.exit("IRC run mode placeholder exit.")
+        print("IRC run mode (-ircrun) selected.")
+        # Assumes necessary files (hessian output, start/end xyz) are in the CWD
+        # tsmod.find_irc_py expects hess_dir_path, reactant_path, product_path
+        # For standalone mode, CWD is hess_dir, start.xyz and end.xyz are default names
+        # The Fortran findirc took (env, i, dum) - i and dum were outputs.
+        # The Python find_irc_py is a placeholder.
+        # For now, just call it with current dir and default names.
+        # This part needs more context for a full implementation.
+        # _, irc_freq = tsmod.find_irc_py(env, Path("."), Path("start.xyz"), Path("end.xyz"))
+        # print(f"  IRC mode (placeholder): Dominant imaginary frequency = {irc_freq} cm-1")
+        print("  Full IRC analysis from main is not yet fully specified/implemented.")
+        sys.exit(0)
+
     if env.picktsrun:
-        print("Pick TS run mode (-picktsrun) is not yet implemented in the Python version.")
-        # tsmod.pick_ts_py(env, ...) # Placeholder
-        sys.exit("Pick TS run mode placeholder exit.")
+        print("Pick TS run mode (-picktsrun) selected.")
+        # tsmod._pick_ts_from_path_py expects env and current_reaction_dir
+        # In standalone mode, this would be the current working directory.
+        # This assumes MEP files (orca_MEP_energy.dat, orca_MEP_trj.xyz) are in CWD.
+        # success = tsmod._pick_ts_from_path_py(env, Path("."))
+        # if success:
+        #     print(f"  TS candidate picked successfully into {Path('.') / 'ts.xyz'}")
+        # else:
+        #     print(f"  Failed to pick a TS candidate in {Path('.')}")
+        print("  Full pick TS from main is not yet fully specified/implemented.")
+        sys.exit(0)
     
     # Convert pthr from percentage to fraction for internal use if mcsimu expects fraction
     # Fortran: env%pthr = env%pthr/100.0_wp*env%nsamples - this was probability * nsamples

@@ -10,7 +10,7 @@ try:
     from . import charges
     from . import reaction
     from . import utility
-    # from . import tsmod # To be imported when available
+    from . import tsmod # Import the new tsmod
     # from . import mcsimu # To be imported when available
     # from . import structools # To be imported when available
     from .constants import AUTOEV, EVTOKCAL # Assuming these are in a constants module
@@ -23,6 +23,7 @@ except ImportError:
     import charges_mock as charges # type: ignore
     import reaction_mock as reaction # type: ignore
     import utility_mock as utility # type: ignore
+    import tsmod_mock as tsmod # type: ignore # Add mock for tsmod if testing standalone
     AUTOEV = 27.211386245988
     EVTOKCAL = 23.060547830618307
 
@@ -357,10 +358,19 @@ def calculate_fragments_py(
 
     # Transition State Search (if not env.nots)
     if not env.nots:
-        # current_npairs, current_fragdirs = tsmod.search_transition_states_py(env, precursor_xyz_fname, current_npairs, current_fragdirs)
-        # This function from tsmod.py is not translated yet.
-        print("  Skipping Transition State search (placeholder).")
-        if current_npairs == 0: print("  No products left after TS search filter."); return [],0
+        print(f"  Starting Transition State search for {current_npairs} potential reactions...")
+        # precursor_xyz_fname is the name of the reactant file within the current working directory (precursor_dir)
+        current_npairs, current_fragdirs = tsmod.ts_search_py(
+            env,
+            precursor_xyz_fname, 
+            current_npairs,
+            current_fragdirs 
+        )
+        if current_npairs == 0: 
+            print("  No products left after TS search filter.")
+            return [], 0
+    else:
+        print("  Skipping Transition State search due to -nots flag.")
     
     # Monte Carlo Simulation
     # This requires eiee/piee to be passed or read by mcsimu
