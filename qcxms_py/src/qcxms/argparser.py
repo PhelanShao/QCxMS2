@@ -3,12 +3,14 @@ import sys
 from dataclasses import fields
 
 try:
-    from .data import RunTypeData, WP
+    from .data import RunTypeData
+    from .constants import WP
     from . import iomod # For check_progs, citation
     # from .utility import check_progs, citation # If they are moved there
 except ImportError:
     # Fallbacks for standalone development
-    from data import RunTypeData, WP
+    from data import RunTypeData
+    from constants import WP
     class IomodMock: # Mock iomod for standalone testing
         @staticmethod
         def check_prog(pname, verbose=False, critical=True): print(f"Mock check_prog: {pname}")
@@ -643,4 +645,3 @@ if __name__ == '__main__':
 
     if Path("test.xyz").exists() and len(sys.argv) == 1:
         Path("test.xyz").unlink()
-```

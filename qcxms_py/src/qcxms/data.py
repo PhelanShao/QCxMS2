@@ -2,11 +2,8 @@ from dataclasses import dataclass, field
 import time
 import sys
 
-# Precision parameter
-WP = float
-
-# Bohr constant
-BOHR: WP = 0.52917726
+# Import constants from centralized module
+from .constants import WP, BOHR
 
 @dataclass
 class Timer:
@@ -262,5 +259,3 @@ def small_head(text: str): # Corrected to use the new function name
 # run_type_data_instance.tcrest = main_timer.t[0][2] # Store accumulated time if needed
 # ...
 # prop_quit(main_timer)
-
-```

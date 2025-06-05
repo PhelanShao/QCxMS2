@@ -18,7 +18,7 @@ try:
     from . import tsmod 
     from . import mcsimu # Actual import for mcsimu
     # from . import plot # Placeholder
-    from .constants import AUTOEV, EVTOKCAL, KB_EV_K, PI_CONST # PI_CONST if needed by ported random
+    from .constants import AUTOEV, EVTOKCAL, KB_EV_K, PI_CONST, WP
 except ImportError:
     print("Attempting to import local/mock modules for main.py standalone run.")
     from data import RunTypeData, Timer, WP # type: ignore
@@ -138,8 +138,13 @@ def main(argv: Optional[List[str]] = None):
         else:
             success_opt = qmmod.run_qm_job_and_read(env, current_precursor_xyz_fname, env.geolevel, 'opt', chrg_in=0, uhf_in=None)
             if not success_opt: sys.exit(f"Initial optimization of {current_precursor_xyz_fname} failed.")
-            print("Placeholder: IP calculation for initial molecule needs to be robustly implemented.")
-            env.ehomo = 10.0 # Placeholder IP
+            print(f"Computing IP at {env.iplevel} level...")
+            success_ip = qmmod.calculate_ip_py(env, current_precursor_xyz_fname)
+            if not success_ip:
+                print("Warning: IP calculation failed, using default value of 10.0 eV")
+                env.ehomo = 10.0
+            else:
+                env.ehomo = qmmod.read_ip_result_py(env, current_precursor_xyz_fname)
             iomod.wrshort_real_py(ip_file, env.ehomo)
         print(f"IP of input molecule is {env.ehomo:.3f} eV")
     
@@ -233,15 +238,247 @@ def main(argv: Optional[List[str]] = None):
         print(f"Written {ntot_unique_frags} unique fragment paths to allfrags.dat.")
     except IOError: print("Error writing allfrags.dat.")
 
-    if Path(env.startdir) / "allfrags.dat": 
-        print("Plotting (getpeaks) is not fully implemented yet.")
-    else: print("allfrags.dat not found, skipping plotting stage.")
+    # Generate final spectrum and plots
+    print("\n=== Generating Final Results ===")
+    
+    if (Path(env.startdir) / "allfrags.dat").exists():
+        try:
+            # Import plotting module
+            from . import plotting
+            
+            # Generate mass spectrum from pfrag files
+            _generate_mass_spectrum_py(env)
+            
+            # Generate all plots
+            if plotting.MATPLOTLIB_AVAILABLE:
+                print("Generating plots...")
+                plotting.generate_all_plots_py(env, Path(env.startdir))
+            else:
+                print("Matplotlib not available - skipping plot generation")
+                
+            # Generate simulation summary
+            _generate_simulation_summary_py(env)
+            
+        except ImportError as e:
+            print(f"Warning: Could not import plotting module: {e}")
+        except Exception as e:
+            print(f"Error generating final results: {e}")
+    else:
+        print("allfrags.dat not found, skipping plotting stage.")
+    
     main_timer.stop(overall_timer_idx)
     ap.eval_timer_py(main_timer) 
     print("\nQCxMS2 Python port finished normally (or with placeholders).")
     iomod.touch(Path(env.startdir) / "QCxMS2_finished")
 
+
+def _generate_mass_spectrum_py(env: RunTypeData) -> bool:
+    """
+    Generate mass spectrum from pfrag files.
+    Collects all fragment intensities and creates spectrum data.
+    """
+    try:
+        print("Generating mass spectrum from fragment intensities...")
+        
+        spectrum_data = {}  # mass -> intensity
+        
+        # Read allfrags.dat to get all fragment paths
+        allfrags_file = Path(env.startdir) / "allfrags.dat"
+        if not allfrags_file.exists():
+            print("  Error: allfrags.dat not found")
+            return False
+        
+        with open(allfrags_file, 'r') as f:
+            lines = f.readlines()
+            if len(lines) < 2:
+                print("  Error: allfrags.dat is empty or malformed")
+                return False
+            
+            # Process each fragment
+            for line in lines[1:]:  # Skip first line (count)
+                frag_path = line.strip()
+                if not frag_path:
+                    continue
+                
+                frag_dir = Path(env.startdir) / frag_path
+                if not frag_dir.exists():
+                    continue
+                
+                # Read fragment intensity
+                pfrag_file = frag_dir / "pfrag"
+                if pfrag_file.exists():
+                    intensity = iomod.rdshort_real_py(pfrag_file, default=0.0)
+                    
+                    # Get fragment mass
+                    xyz_file = None
+                    for xyz_name in ["fragment.xyz", "isomer.xyz"]:
+                        if (frag_dir / xyz_name).exists():
+                            xyz_file = frag_dir / xyz_name
+                            break
+                    
+                    if xyz_file and intensity > 0:
+                        # Calculate molecular mass
+                        natoms, atomic_numbers, _ = utility.get_atomic_numbers_and_coords_py(xyz_file)
+                        if natoms > 0 and atomic_numbers:
+                            mass = utility.get_average_mol_mass_py(atomic_numbers)
+                            
+                            # Add to spectrum (sum intensities for same mass)
+                            if mass in spectrum_data:
+                                spectrum_data[mass] += intensity
+                            else:
+                                spectrum_data[mass] = intensity
+        
+        if not spectrum_data:
+            print("  Warning: No fragment data found for spectrum generation")
+            return False
+        
+        # Normalize intensities to 100%
+        max_intensity = max(spectrum_data.values())
+        if max_intensity > 0:
+            for mass in spectrum_data:
+                spectrum_data[mass] = (spectrum_data[mass] / max_intensity) * 100.0
+        
+        # Write spectrum file
+        spectrum_file = Path(env.startdir) / "allspec.dat"
+        with open(spectrum_file, 'w') as f:
+            f.write("# Mass spectrum from QCxMS2 simulation\n")
+            f.write("# m/z  Intensity(%)\n")
+            
+            # Sort by mass
+            for mass in sorted(spectrum_data.keys()):
+                f.write(f"{mass:.1f}  {spectrum_data[mass]:.2f}\n")
+        
+        print(f"  Mass spectrum written to {spectrum_file}")
+        print(f"  Spectrum contains {len(spectrum_data)} peaks")
+        
+        return True
+        
+    except Exception as e:
+        print(f"  Error generating mass spectrum: {e}")
+        return False
+
+
+def _generate_simulation_summary_py(env: RunTypeData) -> bool:
+    """
+    Generate comprehensive simulation summary report.
+    """
+    try:
+        print("Generating simulation summary report...")
+        
+        summary_file = Path(env.startdir) / "simulation_summary.txt"
+        
+        with open(summary_file, 'w') as f:
+            f.write("QCxMS2 Simulation Summary Report\n")
+            f.write("=" * 50 + "\n\n")
+            
+            # Simulation parameters
+            f.write("Simulation Parameters:\n")
+            f.write("-" * 20 + "\n")
+            f.write(f"Input molecule: {env.infile}\n")
+            f.write(f"Charge: {env.chrg}\n")
+            f.write(f"Mode: {env.mode}\n")
+            f.write(f"Temperature: {env.temp} K\n")
+            f.write(f"Geometry level: {env.geolevel}\n")
+            f.write(f"TS level: {env.tslevel}\n")
+            f.write(f"IP level: {env.iplevel}\n")
+            if hasattr(env, 'ip2level') and env.ip2level:
+                f.write(f"IP2 level: {env.ip2level}\n")
+            f.write(f"Max fragmentation levels: {env.nfrag}\n")
+            f.write(f"Probability threshold: {env.pthr}%\n")
+            f.write(f"Number of cores: {env.cores}\n")
+            f.write(f"TS finder: {env.tsfinder}\n")
+            
+            if env.mode.lower() == "cid":
+                f.write(f"CID collision energy: {getattr(env, 'cid_elab', 'N/A')} eV\n")
+                f.write(f"CID target gas: {getattr(env, 'cid_target_gas', 'N/A')}\n")
+            
+            f.write("\n")
+            
+            # Fragment statistics
+            allfrags_file = Path(env.startdir) / "allfrags.dat"
+            if allfrags_file.exists():
+                with open(allfrags_file, 'r') as af:
+                    lines = af.readlines()
+                    if lines:
+                        total_frags = int(lines[0].strip())
+                        f.write("Fragment Statistics:\n")
+                        f.write("-" * 20 + "\n")
+                        f.write(f"Total unique fragments: {total_frags}\n")
+                        
+                        # Count fragments by level
+                        level_counts = {}
+                        for line in lines[1:]:
+                            frag_path = line.strip()
+                            if frag_path:
+                                level = frag_path.count('p')  # Simple level estimation
+                                level_counts[level] = level_counts.get(level, 0) + 1
+                        
+                        for level in sorted(level_counts.keys()):
+                            f.write(f"  Level {level}: {level_counts[level]} fragments\n")
+                        
+                        f.write("\n")
+            
+            # Spectrum statistics
+            spectrum_file = Path(env.startdir) / "allspec.dat"
+            if spectrum_file.exists():
+                masses = []
+                intensities = []
+                with open(spectrum_file, 'r') as sf:
+                    for line in sf:
+                        if not line.startswith('#') and line.strip():
+                            parts = line.split()
+                            if len(parts) >= 2:
+                                try:
+                                    masses.append(float(parts[0]))
+                                    intensities.append(float(parts[1]))
+                                except ValueError:
+                                    continue
+                
+                if masses and intensities:
+                    f.write("Mass Spectrum Statistics:\n")
+                    f.write("-" * 25 + "\n")
+                    f.write(f"Number of peaks: {len(masses)}\n")
+                    f.write(f"Mass range: {min(masses):.1f} - {max(masses):.1f} m/z\n")
+                    f.write(f"Base peak: {masses[intensities.index(max(intensities))]:.1f} m/z\n")
+                    f.write(f"Molecular ion: {max(masses):.1f} m/z\n")
+                    
+                    # Count significant peaks (>5% intensity)
+                    significant_peaks = sum(1 for i in intensities if i > 5.0)
+                    f.write(f"Significant peaks (>5%): {significant_peaks}\n")
+                    f.write("\n")
+            
+            # File listing
+            f.write("Generated Files:\n")
+            f.write("-" * 15 + "\n")
+            
+            important_files = [
+                "allfrags.dat", "allspec.dat", "simulation_summary.txt",
+                "mass_spectrum.png", "energy_distribution.png",
+                "fragmentation_tree.png", "results_summary.html"
+            ]
+            
+            for filename in important_files:
+                filepath = Path(env.startdir) / filename
+                if filepath.exists():
+                    size_kb = filepath.stat().st_size / 1024
+                    f.write(f"  {filename} ({size_kb:.1f} KB)\n")
+            
+            # Count reaction directories
+            reaction_dirs = list(Path(env.startdir).glob("p*"))
+            reaction_dirs = [d for d in reaction_dirs if d.is_dir()]
+            if reaction_dirs:
+                f.write(f"  {len(reaction_dirs)} reaction directories (p*)\n")
+            
+            f.write("\n")
+            f.write("End of Summary\n")
+        
+        print(f"  Simulation summary written to {summary_file}")
+        return True
+        
+    except Exception as e:
+        print(f"  Error generating simulation summary: {e}")
+        return False
+
+
 if __name__ == "__main__":
     main()
-
-```

@@ -2,7 +2,7 @@ import os
 import shutil
 import subprocess
 from pathlib import Path
-from typing import TypeVar, Union, List, Optional
+from typing import TypeVar, Union, List, Optional, Tuple
 
 # Attempt to import WP, otherwise default to float
 try:
@@ -473,5 +473,3 @@ if __name__ == '__main__':
     # Cleanup
     shutil.rmtree(test_dir)
     print(f"Cleaned up {test_dir}")
-
-```

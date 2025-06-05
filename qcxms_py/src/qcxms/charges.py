@@ -1,4 +1,6 @@
 import math
+import os
+import shutil
 from pathlib import Path
 from typing import Tuple, Optional, List, Dict, Union
 
@@ -7,6 +9,7 @@ try:
     from . import iomod
     from . import qmmod
     from . import utility
+    from .constants import AUTOEV, KB_EV_K
 except ImportError:
     # Fallbacks for standalone/testing
     print("Attempting to import dummy/mock modules for charges.py standalone run.")
@@ -14,10 +17,8 @@ except ImportError:
     import iomod_mock as iomod # type: ignore
     import qmmod_mock as qmmod # type: ignore
     import utility_mock as utility # type: ignore
-
-# Constants (ensure these are consistent with the project's definitions)
-HARTREE_TO_EV = 27.211386245988  # Conversion factor for Hartrees to eV
-KB_EV_K = 8.6173332621415e-5   # Boltzmann constant in eV/K
+    AUTOEV = 27.211386245988
+    KB_EV_K = 8.6173332621415e-5
 
 
 def _calculate_ip_for_fragment(
@@ -96,7 +97,7 @@ def _calculate_ip_for_fragment(
 
     # Calculate IP
     ip_value_au = e_charged_au - e_neutral_au
-    ip_value_ev = ip_value_au * HARTREE_TO_EV
+    ip_value_ev = ip_value_au * AUTOEV
 
     # Validity check (e.g., positive IP for positive ion mode)
     if original_charge >= 0 and ip_value_ev < 0:
@@ -441,5 +442,3 @@ if __name__ == '__main__':
     if Path("test_run").exists():
         shutil.rmtree("test_run")
     print("Test run finished and cleaned up.")
-
-```

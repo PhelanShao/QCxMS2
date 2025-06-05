@@ -12,8 +12,8 @@ try:
     from . import iomod
     from . import utility
     from . import qmmod 
-    from . import cid 
-    from .constants import AUTOEV, EVTOKCAL, HARTREE_TO_EV, KB_EV_K, PI
+    from . import cid
+    from .constants import AUTOEV, EVTOKCAL, KB_EV_K, PI
 except ImportError:
     print("Attempting to import dummy/mock modules for mcsimu.py standalone run.")
     from data import RunTypeData, WP # type: ignore
@@ -21,9 +21,8 @@ except ImportError:
     import utility_mock as utility # type: ignore
     import qmmod_mock as qmmod # type: ignore
     import cid_mock as cid # type: ignore
-    AUTOEV = 27.211386245988 
+    AUTOEV = 27.211386245988
     EVTOKCAL = 23.060547830618307
-    HARTREE_TO_EV = AUTOEV 
     KB_EV_K = 8.6173332621415e-5
     PI = math.pi
 
@@ -180,8 +179,8 @@ def montecarlo_py(
                 nvib_f2 = max(1, 3*nat_f2 - (5 if utility.is_linear_molecule_py(str(prod2_xyz_abs_path)) else 6))
                 rrho_f2_hartree_list = _xtb_thermo_py(env, num_e_increments, nvib_f2, max_eiee_for_thermo_ev, prod2_xyz_abs_path, True)
             for k_inc in range(num_e_increments):
-                alldgs_kjmol[i][k_inc] = (barriers_ev[i] + (rrho_ts_hartree_list[k_inc] - rrho_start_hartree_list[k_inc]) * HARTREE_TO_EV) * EVTOKCAL * 4.184
-                all_delta_g_reaction_ev[i][k_inc] = delta_e_ev[i] + ((rrho_f1_hartree_list[k_inc] + (rrho_f2_hartree_list[k_inc] if rrho_f2_hartree_list else 0.0)) - rrho_start_hartree_list[k_inc]) * HARTREE_TO_EV
+                alldgs_kjmol[i][k_inc] = (barriers_ev[i] + (rrho_ts_hartree_list[k_inc] - rrho_start_hartree_list[k_inc]) * AUTOEV) * EVTOKCAL * 4.184
+                all_delta_g_reaction_ev[i][k_inc] = delta_e_ev[i] + ((rrho_f1_hartree_list[k_inc] + (rrho_f2_hartree_list[k_inc] if rrho_f2_hartree_list else 0.0)) - rrho_start_hartree_list[k_inc]) * AUTOEV
     sumdekin_val, sumdeint_val, xtrav_val = 0.0, 0.0, 0.0 # For CID outputs
     if env.mode.lower() == "cid": print("    CID activation call placeholder.") # Actual call to cid.simulate_cid_activation_py would update these.
     sum_ktot_reciprocal, ker_total_weighted_sum, num_fragmentation_events = 0.0, 0.0, 0
@@ -384,5 +383,3 @@ if __name__ == '__main__':
 
     shutil.rmtree(env_test.startdir)
     print("\nMCsimu test structure execution finished.")
-
-```

@@ -13,7 +13,7 @@ try:
     from . import tsmod 
     from . import mcsimu # MCSimu Integration
     # from . import structools 
-    from .constants import AUTOEV, EVTOKCAL 
+    from .constants import AUTOEV, EVTOKCAL
 except ImportError:
     # Fallbacks for standalone/testing
     print("Attempting to import dummy/mock modules for fragmentation.py standalone run.")
@@ -26,6 +26,87 @@ except ImportError:
     import tsmod_mock as tsmod # type: ignore # Add mock for tsmod if testing standalone
     AUTOEV = 27.211386245988
     EVTOKCAL = 23.060547830618307
+
+
+def _get_precursor_energy_py(env: RunTypeData, precursor_xyz_fname: str) -> Optional[WP]:
+    """
+    Get the energy of the precursor molecule.
+    Returns energy in Hartree or None if failed.
+    """
+    try:
+        # Try to get energy from qmdata cache first
+        chrg, uhf = qmmod._get_chrg_uhf(env, precursor_xyz_fname)
+        query = f"{env.tslevel} sp {chrg} {uhf}"
+        
+        # Check if energy is already cached
+        qmdata_path = Path("qmdata")
+        if qmdata_path.exists():
+            found, energy = iomod.grepval(qmdata_path, query)
+            if found and abs(energy) > 1e-5:
+                return energy
+        
+        # If not cached, calculate it
+        success = qmmod.run_qm_job_and_read(env, precursor_xyz_fname, env.tslevel, 'sp', chrg, uhf)
+        if success:
+            # Read the energy from qmdata
+            found, energy = iomod.grepval(qmdata_path, query)
+            if found:
+                return energy
+        
+        print(f"Warning: Could not calculate precursor energy for {precursor_xyz_fname}")
+        return None
+        
+    except Exception as e:
+        print(f"Error calculating precursor energy: {e}")
+        return None
+
+
+def _calculate_single_reaction_energy_py(env: RunTypeData, precursor_energy: WP,
+                                       p_id: str, item1_dir: str, item2_dir: str) -> WP:
+    """
+    Calculate reaction energy for a single reaction.
+    Returns reaction energy in eV (positive = endothermic).
+    """
+    try:
+        product_energy_total = 0.0
+        
+        # Calculate energy of first product
+        item1_xyz = Path(item1_dir) / ("isomer.xyz" if not item2_dir else "fragment.xyz")
+        if item1_xyz.exists():
+            os.chdir(item1_dir)
+            chrg1, uhf1 = qmmod._get_chrg_uhf(env, item1_xyz.name)
+            success1 = qmmod.run_qm_job_and_read(env, item1_xyz.name, env.tslevel, 'sp', chrg1, uhf1)
+            if success1:
+                query1 = f"{env.tslevel} sp {chrg1} {uhf1}"
+                found1, energy1 = iomod.grepval("qmdata", query1)
+                if found1:
+                    product_energy_total += energy1
+            os.chdir("..")
+        
+        # Calculate energy of second product (if it exists)
+        if item2_dir:
+            item2_xyz = Path(item2_dir) / "fragment.xyz"
+            if item2_xyz.exists():
+                os.chdir(item2_dir)
+                chrg2, uhf2 = qmmod._get_chrg_uhf(env, item2_xyz.name)
+                success2 = qmmod.run_qm_job_and_read(env, item2_xyz.name, env.tslevel, 'sp', chrg2, uhf2)
+                if success2:
+                    query2 = f"{env.tslevel} sp {chrg2} {uhf2}"
+                    found2, energy2 = iomod.grepval("qmdata", query2)
+                    if found2:
+                        product_energy_total += energy2
+                os.chdir("..")
+        
+        # Calculate reaction energy: ΔE = E(products) - E(reactant)
+        reaction_energy_hartree = product_energy_total - precursor_energy
+        reaction_energy_ev = reaction_energy_hartree * AUTOEV  # Convert to eV
+        
+        print(f"    Reaction {p_id}: ΔE = {reaction_energy_ev:.3f} eV")
+        return reaction_energy_ev
+        
+    except Exception as e:
+        print(f"Error calculating reaction energy for {p_id}: {e}")
+        return 1000.0  # High energy to exclude this reaction
 
 
 def _generate_fragments_with_crest_py(
@@ -309,43 +390,61 @@ def calculate_fragments_py(
     current_npairs = npairs_generated
 
     # GFF Topology Check (only if new fragments, i.e., not restart with existing msreact.out)
-    # The Fortran code did this if not restart.
-    # if not (Path("msreact.out").exists() and env.restartrun):
-    #    current_npairs, current_fragdirs = reaction.gff_topology_check_py(env, current_npairs, current_fragdirs)
-    #    if current_npairs == 0: print("  No products left after GFF topology check."); return [],0
-    # This function is not fully translated in reaction.py yet. Skipping for now.
-    print("  Skipping GFF topology check (placeholder).")
+    if not (Path("msreact.out").exists() and env.restartrun):
+        current_npairs, current_fragdirs = reaction.gff_topology_check_py(env, current_npairs, current_fragdirs)
+        if current_npairs == 0:
+            print("  No products left after GFF topology check.")
+            return [], 0
+    else:
+        print("  Skipping GFF topology check (restart mode).")
 
 
     # Optimize fragments for IP calculation (if not hot IPs)
     if not env.hotip:
-        # current_npairs, current_fragdirs = reaction.optimize_fragments_py(env, current_npairs, current_fragdirs)
-        # This function is not fully translated in reaction.py yet. Skipping for now.
-        print("  Skipping fragment optimization for IPs (assuming hotip or placeholder).")
-        if current_npairs == 0: print("  No products left after fragment optimization for IP."); return [],0
+        current_npairs, current_fragdirs = reaction.optimize_fragments_py(env, current_npairs, current_fragdirs)
+        if current_npairs == 0:
+            print("  No products left after fragment optimization for IP.")
+            return [], 0
+    else:
+        print("  Using hot IPs, skipping fragment optimization.")
 
     # Assign charges
     current_npairs, current_fragdirs = charges.assign_charges_py(env, current_npairs, current_fragdirs)
     if current_npairs == 0: print("  No products left after charge assignment."); return [],0
 
     # Optimize products at their assigned charge
-    # current_npairs, current_fragdirs = reaction.optimize_products_py(env, current_npairs, current_fragdirs)
-    # This function is not fully translated in reaction.py yet. Skipping for now.
-    print("  Skipping product optimization at assigned charge (placeholder).")
-    if current_npairs == 0: print("  No products left after product optimization."); return [],0
+    current_npairs, current_fragdirs = reaction.optimize_products_py(env, current_npairs, current_fragdirs)
+    if current_npairs == 0:
+        print("  No products left after product optimization.")
+        return [], 0
 
     # Calculate reaction energies
-    # This returns a dict, but subsequent steps need e_pairs list matching fragdirs.
-    # The Fortran calcreactionenergy directly filled an e_pairs array.
-    # reaction_energy_dict = reaction.calculate_reaction_energies_py(env, current_npairs, current_fragdirs)
-    # e_pairs_for_sorting = [reaction_energy_dict.get(fd[0], 10000.0) for fd in current_fragdirs]
-    # This function is not fully translated in reaction.py yet. Using dummy energies.
-    print("  Skipping reaction energy calculation (placeholder). Assigning dummy DE=0 for all.")
-    e_pairs_for_sorting = [0.0] * current_npairs 
-    # Also, need to write dummy de_<level> and sumreac_<level> files for sortouthighe to read.
-    for p_id, _, _ in current_fragdirs:
-        (Path(p_id) / f"de_{env.tslevel}").write_text("0.0\n")
-    (Path(".") / f"sumreac_{env.tslevel}").write_text("0.0\n") # Precursor sumreac
+    print(f"  Calculating reaction energies for {current_npairs} reactions...")
+    e_pairs_for_sorting = []
+    
+    # Get precursor energy
+    precursor_energy = _get_precursor_energy_py(env, precursor_xyz_fname)
+    if precursor_energy is None:
+        print("  Warning: Could not get precursor energy, using dummy values")
+        e_pairs_for_sorting = [0.0] * current_npairs
+    else:
+        # Calculate reaction energy for each product
+        for i, (p_id, item1_dir, item2_dir) in enumerate(current_fragdirs):
+            reaction_energy = _calculate_single_reaction_energy_py(
+                env, precursor_energy, p_id, item1_dir, item2_dir
+            )
+            e_pairs_for_sorting.append(reaction_energy)
+            
+            # Write de_<level> file for this reaction
+            (Path(p_id) / f"de_{env.tslevel}").write_text(f"{reaction_energy:.10f}\n")
+    
+    # Write sumreac_<level> file for precursor (0.0 for initial molecule)
+    sumreac_value = 0.0  # For initial molecule, or read from parent if multi-level
+    if fragmentation_level > 1:
+        parent_sumreac_file = Path("..") / f"sumreac_{env.tslevel}"
+        if parent_sumreac_file.exists():
+            sumreac_value = iomod.rdshort_real_py(parent_sumreac_file, default=0.0)
+    (Path(".") / f"sumreac_{env.tslevel}").write_text(f"{sumreac_value:.10f}\n")
 
 
     # Sort out high energy fragments
@@ -629,9 +728,8 @@ if __name__ == '__main__':
     #     # print(f"Next fragments to process: {next_frags}, Count: {num_next}")
 
     # # Cleanup
-    # for f in [".CHRG", ".UHF", "qmdata", "infrag.xyz", "msreact.out", "npairs", 
+    #     for f in [".CHRG", ".UHF", "qmdata", "infrag.xyz", "msreact.out", "npairs",
     #           "cresterror.out", "crestms.inp", "fragment.xyz", Path(test_env_frag.startdir) / "in.xyz"]:
     #     Path(f).unlink(missing_ok=True)
 
     pass
-```

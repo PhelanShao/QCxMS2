@@ -586,6 +586,124 @@ if not hasattr(utility, 'boltzmann_average_energy'):
     utility.boltzmann_average_energy = _boltzmann_average_energy_placeholder
 
 
+def calculate_ip_py(env: RunTypeData, fname_xyz: str) -> bool:
+    """
+    Calculate ionization potential for a molecule.
+    Returns True if successful, False otherwise.
+    """
+    print(f"Calculating IP for {fname_xyz} at {env.iplevel} level...")
+    
+    # First, optimize the neutral molecule if needed
+    cmd_opt, out_opt, patt_opt, clean_opt, cached_opt, _ = \
+        prepqm_py(env, fname_xyz, env.geolevel, 'opt', chrg_in=0, uhf_in=None)
+    
+    if not cached_opt and cmd_opt:
+        result_opt = iomod.execute_command(cmd_opt, shell=False)
+        if result_opt.returncode != 0:
+            print(f"Error: Neutral molecule optimization failed for IP calculation")
+            return False
+        _, failed_opt = readoutqm_py(env, fname_xyz, env.geolevel, 'opt', out_opt, patt_opt)
+        if failed_opt:
+            print(f"Error: Failed to read neutral optimization results")
+            return False
+        if clean_opt: iomod.execute_command(clean_opt.split(), shell=True)
+    
+    # Calculate energy of neutral molecule
+    cmd_sp_neutral, out_sp_neutral, patt_sp_neutral, clean_sp_neutral, cached_sp_neutral, energy_neutral = \
+        prepqm_py(env, fname_xyz, env.iplevel, 'sp', chrg_in=0, uhf_in=None)
+    
+    if not cached_sp_neutral and cmd_sp_neutral:
+        result_sp_neutral = iomod.execute_command(cmd_sp_neutral, shell=False)
+        if result_sp_neutral.returncode != 0:
+            print(f"Error: Neutral SP calculation failed for IP")
+            return False
+        energy_neutral, failed_sp_neutral = readoutqm_py(env, fname_xyz, env.iplevel, 'sp', out_sp_neutral, patt_sp_neutral)
+        if failed_sp_neutral or energy_neutral is None:
+            print(f"Error: Failed to read neutral SP energy")
+            return False
+        if clean_sp_neutral: iomod.execute_command(clean_sp_neutral.split(), shell=True)
+    
+    # Calculate energy of cation (charge +1)
+    cmd_sp_cation, out_sp_cation, patt_sp_cation, clean_sp_cation, cached_sp_cation, energy_cation = \
+        prepqm_py(env, fname_xyz, env.iplevel, 'sp', chrg_in=1, uhf_in=None)
+    
+    if not cached_sp_cation and cmd_sp_cation:
+        result_sp_cation = iomod.execute_command(cmd_sp_cation, shell=False)
+        if result_sp_cation.returncode != 0:
+            print(f"Error: Cation SP calculation failed for IP")
+            return False
+        energy_cation, failed_sp_cation = readoutqm_py(env, fname_xyz, env.iplevel, 'sp', out_sp_cation, patt_sp_cation)
+        if failed_sp_cation or energy_cation is None:
+            print(f"Error: Failed to read cation SP energy")
+            return False
+        if clean_sp_cation: iomod.execute_command(clean_sp_cation.split(), shell=True)
+    
+    # Calculate IP = E(cation) - E(neutral), convert to eV
+    if energy_neutral is not None and energy_cation is not None:
+        ip_hartree = energy_cation - energy_neutral
+        ip_ev = ip_hartree * 27.211386245988  # Convert Hartree to eV
+        
+        # Write IP to file
+        ip_file = Path(f"ip_{env.iplevel}")
+        iomod.wrshort_real_py(ip_file, ip_ev)
+        print(f"Calculated IP: {ip_ev:.3f} eV")
+        return True
+    else:
+        print(f"Error: Could not calculate IP due to missing energies")
+        return False
+
+
+def read_ip_result_py(env: RunTypeData, fname_xyz: str) -> WP:
+    """
+    Read IP result from file.
+    Returns IP value in eV.
+    """
+    ip_file = Path(f"ip_{env.iplevel}")
+    if ip_file.exists():
+        ip_value = iomod.rdshort_real_py(ip_file)
+        return ip_value
+    else:
+        print(f"Warning: IP file {ip_file} not found, returning default value")
+        return 10.0  # Default fallback
+
+
+def run_qm_job_and_read(env: RunTypeData, fname_xyz: str, level: str, job: str,
+                       chrg_in: Optional[int] = None, uhf_in: Optional[int] = None) -> bool:
+    """
+    Run a QM job and read the results.
+    Returns True if successful, False otherwise.
+    """
+    cmd, out_file, pattern, cleanup, cached, cached_value = \
+        prepqm_py(env, fname_xyz, level, job, chrg_in, uhf_in)
+    
+    if cached and cached_value is not None:
+        print(f"Using cached result for {level} {job}: {cached_value}")
+        return True
+    
+    if not cmd:
+        print(f"Error: Could not prepare {level} {job} calculation")
+        return False
+    
+    # Execute the command
+    result = iomod.execute_command(cmd, shell=False)
+    if result.returncode != 0:
+        print(f"Error: {level} {job} calculation failed with return code {result.returncode}")
+        return False
+    
+    # Read the results
+    energy, failed = readoutqm_py(env, fname_xyz, level, job, out_file, pattern)
+    if failed or energy is None:
+        print(f"Error: Failed to read {level} {job} results")
+        return False
+    
+    # Cleanup
+    if cleanup:
+        iomod.execute_command(cleanup.split(), shell=True)
+    
+    print(f"Successfully completed {level} {job}: {energy}")
+    return True
+
+
 if __name__ == '__main__':
     print("QMMod main execution for testing.")
     # Create dummy env and files for testing
@@ -648,5 +766,3 @@ if __name__ == '__main__':
         Path(f_name).unlink(missing_ok=True)
     for d_name in ["gxtb_files"]: # Example if gxtb creates specific dirs
         if Path(d_name).is_dir(): shutil.rmtree(d_name, ignore_errors=True)
-
-```

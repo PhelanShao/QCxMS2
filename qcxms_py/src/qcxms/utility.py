@@ -584,7 +584,7 @@ def rewrite_xyz_elements_to_nice_case(fname: str):
     # This function needs to read the file, modify content, and write back.
     # It's safer to write to a temporary file then replace.
     
-    nat = rdshort_int(fname) # Get number of atoms
+    nat = iomod.rdshort_int(fname) # Get number of atoms
     if nat == 0 and not Path(fname).exists(): # rdshort_int might return 0 if file not found
         print(f"Error: Cannot read number of atoms from {fname} or file does not exist.")
         return
@@ -1049,4 +1049,140 @@ def get_average_mol_mass_py(atomic_numbers: List[int]) -> WP:
             print(f"Warning: Average atomic mass for Z={z_val} not available. Contributing 0 to molecular mass.")
     return molmass
 
-```
+
+# --- Additional functions needed for tsmod.py ---
+
+def xtb_extract_snapshot_py(trajectory_file: Path, frame_number: int, output_file: Path) -> bool:
+    """
+    Extracts a specific frame from an XYZ trajectory file.
+    frame_number is 1-based (Fortran style).
+    Returns True if successful, False otherwise.
+    """
+    try:
+        with open(trajectory_file, 'r') as f:
+            current_frame = 0
+            while True:
+                # Read number of atoms
+                natoms_line = f.readline()
+                if not natoms_line:
+                    break  # EOF
+                
+                natoms = int(natoms_line.strip())
+                comment_line = f.readline()  # Comment line
+                
+                current_frame += 1
+                
+                if current_frame == frame_number:
+                    # This is the frame we want
+                    with open(output_file, 'w') as out_f:
+                        out_f.write(natoms_line)
+                        out_f.write(comment_line)
+                        
+                        # Read and write atom coordinates
+                        for _ in range(natoms):
+                            atom_line = f.readline()
+                            out_f.write(atom_line)
+                    
+                    return True
+                else:
+                    # Skip this frame
+                    for _ in range(natoms):
+                        f.readline()
+        
+        print(f"Error: Frame {frame_number} not found in trajectory {trajectory_file}")
+        return False
+        
+    except Exception as e:
+        print(f"Error extracting frame {frame_number} from {trajectory_file}: {e}")
+        return False
+
+
+def concatenate_xyz_files_py(xyz_files: List[Path], output_file: Path) -> bool:
+    """
+    Concatenates multiple XYZ files into a single XYZ file.
+    Used for combining fragment XYZ files into product structures.
+    """
+    try:
+        total_atoms = 0
+        all_atom_lines = []
+        
+        # Read all input files
+        for xyz_file in xyz_files:
+            if not xyz_file.exists():
+                print(f"Warning: XYZ file {xyz_file} not found for concatenation")
+                continue
+                
+            with open(xyz_file, 'r') as f:
+                lines = f.readlines()
+                
+            if len(lines) < 2:
+                print(f"Warning: XYZ file {xyz_file} is too short")
+                continue
+                
+            natoms = int(lines[0].strip())
+            total_atoms += natoms
+            
+            # Collect atom lines (skip natoms and comment lines)
+            for i in range(2, min(len(lines), natoms + 2)):
+                all_atom_lines.append(lines[i])
+        
+        # Write combined file
+        with open(output_file, 'w') as f:
+            f.write(f"{total_atoms}\n")
+            f.write("Combined structure\n")
+            for line in all_atom_lines:
+                f.write(line)
+        
+        return True
+        
+    except Exception as e:
+        print(f"Error concatenating XYZ files: {e}")
+        return False
+
+
+def check_atom_py(xyz_file: Union[str, Path]) -> bool:
+    """
+    Checks if a molecule is a single atom.
+    Returns True if it's a single atom, False otherwise.
+    """
+    try:
+        natoms, _, _ = get_atomic_numbers_and_coords_py(xyz_file)
+        return natoms == 1
+    except:
+        return False
+
+
+def set_omp_to_one_py():
+    """Python version of set_omp_to_one"""
+    set_omp_to_one()
+
+
+def get_uhf_from_file_py() -> int:
+    """
+    Reads UHF value from .UHF file in current directory.
+    Returns 0 if file not found or cannot be read.
+    """
+    try:
+        return iomod.rdshort_int(".UHF", default=0)
+    except:
+        return 0
+
+
+def calctemp_py(nvib: int, energy_ev: WP) -> WP:
+    """Python version of calctemp"""
+    return calctemp(nvib, energy_ev)
+
+
+def calc_eyring_py(energy: WP, barrier: WP, nvib: int) -> WP:
+    """Python version of calc_eyring"""
+    return calc_eyring(energy, barrier, nvib)
+
+
+def calc_rrkm_py(energy: WP, barrier: WP, nvib: int, freq_cm_minus_1: WP) -> WP:
+    """Python version of calc_rrkm"""
+    return calc_rrkm(energy, barrier, nvib, freq_cm_minus_1)
+
+
+def get_index_from_energy_py(max_iee: WP, energy: WP, increments: int) -> int:
+    """Python version of get_index_from_energy"""
+    return get_index_from_energy(max_iee, energy, increments)
